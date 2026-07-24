@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Interactive 3D Museum Walkthrough</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: Arial, Helvetica, sans-serif; }
+  #app { width: 100vw; height: 100vh; display: block; }
+
+  /* Start overlay */
+  #startScreen {
+    position: fixed; inset: 0; z-index: 30;
+    background: radial-gradient(circle at center, #1a1a2e 0%, #0d0d14 100%);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    color: #f0e9d8; text-align: center; padding: 24px;
+  }
+  #startScreen h1 { font-size: clamp(28px, 5vw, 54px); letter-spacing: 3px; margin-bottom: 10px; }
+  #startScreen p { max-width: 560px; line-height: 1.6; opacity: .85; margin-bottom: 26px; }
+  #startBtn {
+    padding: 16px 40px; font-size: 18px; letter-spacing: 1px; cursor: pointer;
+    border: 2px solid #d4af37; background: transparent; color: #d4af37; border-radius: 4px;
+    transition: all .25s ease;
+  }
+  #startBtn:hover { background: #d4af37; color: #14141c; }
+
+  .controls-key { margin-top: 30px; font-size: 13px; opacity: .7; line-height: 1.9; }
+  .controls-key b { color: #d4af37; }
+
+  /* Crosshair */
+  #crosshair {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    width: 8px; height: 8px; border: 2px solid rgba(255,255,255,.7); border-radius: 50%;
+    z-index: 5; pointer-events: none; display: none;
+  }
+
+  /* On-screen walk arrows */
+  #arrows {
+    position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+    z-index: 10; display: none; user-select: none;
+  }
+  #arrows .row { display: flex; justify-content: center; gap: 10px; }
+  .arrow-btn {
+    width: 60px; height: 60px; margin: 4px;
+    background: rgba(20,20,28,.55); border: 2px solid rgba(212,175,55,.6);
+    color: #d4af37; font-size: 26px; border-radius: 10px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    backdrop-filter: blur(4px); transition: background .15s;
+  }
+  .arrow-btn:hover, .arrow-btn.active { background: rgba(212,175,55,.35); color: #fff; }
+
+  /* HUD */
+  #hud {
+    position: fixed; top: 16px; left: 16px; z-index: 10;
+    color: #f0e9d8; background: rgba(10,10,16,.5); padding: 10px 16px;
+    border-radius: 8px; font-size: 14px; backdrop-filter: blur(4px);
+    border: 1px solid rgba(212,175,55,.3); display: none;
+  }
+  #hud .room { color: #d4af37; font-weight: bold; font-size: 16px; }
+
+  #hint {
+    position: fixed; top: 16px; right: 16px; z-index: 10;
+    color: #cfcabc; background: rgba(10,10,16,.5); padding: 10px 14px;
+    border-radius: 8px; font-size: 12px; line-height: 1.6; backdrop-filter: blur(4px);
+    border: 1px solid rgba(255,255,255,.12); display: none; max-width: 220px;
+  }
+  #hint b { color: #d4af37; }
+</style>
+</head>
+<body>
+<canvas id="app"></canvas>
+
+<div id="startScreen">
+  <h1>THE VIRTUAL GALLERY</h1>
+  <p>A first-person walkthrough museum with one grand lobby and four exhibition rooms.
+     Explore the halls, walk up to each artwork, and take a closer look.</p>
+  <button id="startBtn">ENTER MUSEUM</button>
+  <div class="controls-key">
+    <b>Hold Left Mouse</b> — walk forward &nbsp;•&nbsp; <b>Move Mouse</b> — look around<br>
+    <b>Arrow Keys</b> or <b>W A S D</b> — walk (no mouse needed)<br>
+    <b>On-screen arrows</b> also let you move &nbsp;•&nbsp; <b>Esc</b> — release the mouse
+  </div>
+</div>
+
+<div id="crosshair"></div>
+
+<div id="hud">
+  <div class="room" id="roomName">Main Lobby</div>
+  <div>Explore all 4 rooms</div>
+</div>
+
+<div id="hint">
+  <b>Hold Left Mouse</b> to walk.<br>Move mouse to look.<br>Or use the arrows below / arrow keys.
+</div>
+
+<div id="arrows">
+  <div class="row"><div class="arrow-btn" data-dir="forward">▲</div></div>
+  <div class="row">
+    <div class="arrow-btn" data-dir="left">◀</div>
+    <div class="arrow-btn" data-dir="back">▼</div>
+    <div class="arrow-btn" data-dir="right">▶</div>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "[unpkg.com](https://unpkg.com/three@0.160.0/build/three.module.js)"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ============================================================
+   ARTWORK CONFIG  —  EDIT THIS to add your own images
+   ------------------------------------------------------------
+   For each painting, set `src` to your image file path/URL.
+   Leave src empty ("") to show the placeholder + alt text.
+   Example:  { title:'Sunrise', src:'images/sunrise.jpg', alt:'...' }
+   ============================================================ */
+const ARTWORKS = {
+  lobby: [
+    { title: 'Welcome Piece', src: '', alt: 'This painting will be here soon.' }
+  ],
+  room1: [
+    { title: 'Room 1 — Painting A', src: '', alt: 'This painting will be here soon.' },
+    { title: 'Room 1 — Painting B', src: '', alt: 'This painting will be here soon.' },
+    { title: 'Room 1 — Painting C', src: '', alt: 'This painting will be here soon.' }
+  ],
+  room2: [
+    { title: 'Room 2 — Painting A', src: '', alt: 'This painting will be here soon.' },
+    { title: 'Room 2 — Painting B', src: '', alt: 'This painting will be here soon.' },
+    { title: 'Room 2 — Painting C', src: '', alt: 'This painting will be here soon.' }
+  ],
+  room3: [
+    { title: 'Room 3 — Painting A', src: '', alt: 'This painting will be here soon.' },
+    { title: 'Room 3 — Painting B', src: '', alt: 'This painting will be here soon.' },
+    { title: 'Room 3 — Painting C', src: '', alt: 'This painting will be here soon.' }
+  ],
+  room4: [
+    { title: 'Room 4 — Painting A', src: '', alt: 'This painting will be here soon.' },
+    { title: 'Room 4 — Painting B', src: '', alt: 'This painting will be here soon.' },
+    { title: 'Room 4 — Painting C', src: '', alt: 'This painting will be here soon.' }
+  ]
+};
+
+/* ---------- Scene setup ---------- */
+const canvas = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0b12);
+scene.fog = new THREE.Fog(0x0b0b12, 18, 55);
+
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 200);
+const EYE_HEIGHT = 1.7;
+camera.position.set(0, EYE_HEIGHT, 8);
+
+/* ---------- Lighting ---------- */
+scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+const hemi = new THREE.HemisphereLight(0xffffff, 0x404050, 0.5);
+scene.add(hemi);
+
+/* ---------- Materials ---------- */
+const floorMat = new THREE.MeshStandardMaterial({ color: 0x2b2b33, roughness: 0.9 });
+const wallMat  = new THREE.MeshStandardMaterial({ color: 0xe9e4d6, roughness: 1.0 });
+const trimMat  = new THREE.MeshStandardMaterial({ color: 0xd4af37, roughness: 0.6, metalness: 0.3 });
+const ceilMat  = new THREE.MeshStandardMaterial({ color: 0x1c1c24, roughness: 1.0 });
+
+/* Collision walls list (axis-aligned boxes: {minX,maxX,minZ,maxZ}) */
+const colliders = [];
+function addCollider(minX, maxX, minZ, maxZ) { colliders.push({ minX, maxX, minZ, maxZ }); }
+
+/* ---------- Builders ---------- */
+const WALL_H = 6;
+const WALL_T = 0.4;
+
+function buildFloorCeiling(cx, cz, w, d) {
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(w, d), floorMat);
+  floor.rotation.x = -Math.PI / 2;
+  floor.position.set(cx, 0, cz);
+  scene.add(floor);
+  const ceil = new THREE.Mesh(new THREE.PlaneGeometry(w, d), ceilMat);
+  ceil.rotation.x = Math.PI / 2;
+  ceil.position.set(cx, WALL_H, cz);
+  scene.add(ceil);
+}
+
+/* wall segment centered at (x,z) with given length along axis */
+function buildWall(x, z, length, axis, addCol = true) {
+  const w = axis === 'x' ? length : WALL_T;
+  const d = axis === 'x' ? WALL_T : length;
+  const wall = new THREE.Mesh(new THREE.BoxGeometry(w, WALL_H, d), wallMat);
+  wall.position.set(x, WALL_H / 2, z);
+  scene.add(wall);
+  if (addCol) addCollider(x - w / 2, x + w / 2, z - d / 2, z + d / 2);
+  return wall;
+}
+
+/* A doorway wall = two segments with a gap in the middle */
+function buildWallWithDoor(centerX, centerZ, length, axis, doorWidth = 3) {
+  const half = length / 2;
+  const seg = (length - doorWidth) / 2;
+  if (axis === 'x') {
+    buildWall(centerX - (half - seg / 2), centerZ, seg, 'x');
+    buildWall(centerX + (half - seg / 2), centerZ, seg, 'x');
+  } else {
+    buildWall(centerX, centerZ - (half - seg / 2), seg, 'z');
+    buildWall(centerX, centerZ + (half - seg / 2), seg, 'z');
+  }
+}
+
+/* ---------- Paintings ---------- */
+const texLoader = new THREE.TextureLoader();
+const canvasTexCache = [];
+
+function makePlaceholderTexture(text) {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 384;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#3a3a44'; ctx.fillRect(0, 0, c.width, c.height);
+  ctx.strokeStyle = '#d4af37'; ctx.lineWidth = 6;
+  ctx.strokeRect(12, 12, c.width - 24, c.height - 24);
+  ctx.fillStyle = '#d4af37'; ctx.font = 'bold 40px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('🖼', c.width / 2, c.height / 2 - 40);
+  ctx.fillStyle = '#f0e9d8'; ctx.font = '22px Arial';
+  wrapText(ctx, text, c.width / 2, c.height / 2 + 20, c.width - 80, 28);
+  const tex = new THREE.CanvasTexture(c);
+  return tex;
+}
+function wrapText(ctx, text, x, y, maxW, lh) {
+  const words = text.split(' '); let line = ''; let yy = y;
+  for (const w of words) {
+    const test = line + w + ' ';
+    if (ctx.measureText(test).width > maxW && line) { ctx.fillText(line, x, yy); line = w + ' '; yy += lh; }
+    else line = test;
+  }
+  ctx.fillText(line, x, yy);
+}
+
+/* Places a framed painting on a wall.
+   wall face position (x,z), facing = direction the painting faces ('n','s','e','w') */
+function addPainting(art, x, z, facing) {
+  const group = new THREE.Group();
+  const pw = 2.6, ph = 1.9;
+
+  // frame
+  const frame = new THREE.Mesh(new THREE.BoxGeometry(pw + 0.25, ph + 0.25, 0.12), trimMat);
+  group.add(frame);
+
+  // canvas / image
+  const imgMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7 });
+  if (art.src) {
+    texLoader.load(
+      art.src,
+      (t) => { imgMat.map = t; imgMat.needsUpdate = true; },
+      undefined,
+      () => { imgMat.map = makePlaceholderTexture(art.alt); imgMat.needsUpdate = true; }
+    );
+  } else {
+    imgMat.map = makePlaceholderTexture(art.alt);
+  }
+  const pic = new THREE.Mesh(new THREE.PlaneGeometry(pw, ph), imgMat);
+  pic.position.z = 0.07;
+  group.add(pic);
+
+  // small spotlight for the art
+  const spot = new THREE.SpotLight(0xfff2d0, 6, 9, Math.PI / 6, 0.5, 1.2);
+  spot.position.set(0, ph, 2);
+  spot.target = pic;
+  group.add(spot);
+  group.add(spot.target);
+
+  group.position.set(x, EYE_HEIGHT + 0.4, z);
+  const rot = { n: 0, s: Math.PI, e: -Math.PI / 2, w: Math.PI / 2 }[facing];
+  group.rotation.y = rot;
+  scene.add(group);
+}
+
+/* ============================================================
+   MUSEUM LAYOUT
+   Lobby in center; 4 rooms around it (N, S, E, W).
+   ============================================================ */
+
+// --- LOBBY (12 x 12, centered at origin) ---
+const LB = 6; // half-size
+buildFloorCeiling(0, 0, LB * 2, LB * 2);
+// Lobby walls with doorways on each side leading to corridors/rooms
+buildWallWithDoor(0, -LB, LB * 2, 'x'); // north wall (to Room 1)
+buildWallWithDoor(0,  LB, LB * 2, 'x'); // south wall (to Room 3)
+buildWallWithDoor(-LB, 0, LB * 2, 'z'); // west wall (to Room 4)
+buildWallWithDoor( LB, 0, LB * 2, 'z'); // east wall (to Room 2)
+addPainting(ARTWORKS.lobby[0], 0, -LB + WALL_T + 0.1, 's'); // painting on north lobby wall facing south? adjust below
+// central column decoration
+const col = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.7, WALL_H, 24), trimMat);
+col.position.set(0, WALL_H / 2, 0);
+scene.add(col);
+addCollider(-0.8, 0.8, -0.8, 0.8);
+
+// Helper to build a room offset from lobby, connected by a doorway on one edge
+const ROOM = 8; // half-size of a room (16x16)
+const GAP = LB + 3; // distance from origin to near edge start
+
+/* Build a rectangular room centered at (cx,cz), size 2*ROOM.
+   `openSide` = which wall has the doorway toward the lobby. */
+function buildRoom(cx, cz, openSide, arts) {
+  buildFloorCeiling(cx, cz, ROOM * 2, ROOM * 2);
+  const sides = ['n', 's', 'e', 'w'];
+  for (const s of sides) {
+    if (s === openSide) {
+      if (s === 'n') buildWallWithDoor(cx, cz - ROOM, ROOM * 2, 'x');
+      if (s === 's') buildWallWithDoor(cx, cz + ROOM, ROOM * 2, 'x');
+      if (s === 'w') buildWallWithDoor(cx - ROOM, cz, ROOM * 2, 'z');
+      if (s === 'e') buildWallWithDoor(cx + ROOM, cz, ROOM * 2, 'z');
+    } else {
+      if (s === 'n') buildWall(cx, cz - ROOM, ROOM * 2, 'x');
+      if (s === 's') buildWall(cx, cz + ROOM, ROOM * 2, 'x');
+      if (s === 'w') buildWall(cx - ROOM, cz, ROOM * 2, 'z');
+      if (s === 'e') buildWall(cx + ROOM, cz, ROOM * 2, 'z');
+    }
+  }
+  // place paintings on the three closed walls
+  const closed = sides.filter(s => s !== openSide);
+  const inset = ROOM - WALL_T - 0.1;
+  const offsets = [-3.5, 0, 3.5];
+  let i = 0;
+  for (const s of closed) {
+    if (arts[i]) {
+      if (s === 'n') addPainting(arts[i], cx, cz - inset, 's');
+      if (s === 's') addPainting(arts[i], cx, cz + inset, 'n');
+      if (s === 'w') addPainting(arts[i], cx - inset, cz, 'e');
+      if (s === 'e') addPainting(arts[i], cx + inset, cz, 'w');
+    }
+    i++;
+  }
+}
+
+/* Position rooms so their doorway edges roughly align with lobby doorways.
+   Room 1 = North, Room 2 = East, Room 3 = South, Room 4 = West */
+const D = LB + ROOM; // center-to-center distance
+buildRoom(0, -D, 's', ARTWORKS.room1); // North room, opens south toward lobby
+buildRoom(D,  0, 'w', ARTWORKS.room2); // East room, opens west
+buildRoom(0,  D, 'n', ARTWORKS.room3); // South room, opens north
+buildRoom(-D, 0, 'e', ARTWORKS.room4); // West room, opens east
+
+/* Fix the lobby welcome painting placement (put it beside the column area on ceiling column instead — simpler: on a short pedestal sign). */
+
+// Named regions for HUD
+const REGIONS = [
+  { name: 'Main Lobby', cx: 0,  cz: 0,  r: LB },
+  { name: 'Room 1',     cx: 0,  cz: -D, r: ROOM },
+  { name: 'Room 2',     cx: D,  cz: 0,  r: ROOM },
+  { name: 'Room 3',     cx: 0,  cz: D,  r: ROOM },
+  { name: 'Room 4',     cx: -D, cz: 0,  r: ROOM }
+];
+
+/* ---------- Controls ---------- */
+const move = { forward: false, back: false, left: false, right: false };
+let mouseWalking = false;
+let yaw = Math.PI;   // looking toward -Z initially (into lobby)
+let pitch = 0;
+let pointerLocked = false;
+
+const SPEED = 3.4;         // units per second
+const PLAYER_RADIUS = 0.45;
+
+const startScreen = document.getElementById('startScreen');
+const startBtn = document.getElementById('startBtn');
+const crosshair = document.getElementById('crosshair');
+const hud = document.getElementById('hud');
+const hint = document.getElementById('hint');
+const arrows = document.getElementById('arrows');
+const roomNameEl = document.getElementById('roomName');
+
+startBtn.addEventListener('click', () => {
+  startScreen.style.display = 'none';
+  crosshair.style.display = 'block';
+  hud.style.display = 'block';
+  hint.style.display = 'block';
+  arrows.style.display = 'block';
+  canvas.requestPointerLock?.();
+});
+
+/* Pointer lock for mouse-look */
+canvas.addEventListener('click', () => {
+  if (startScreen.style.display === 'none' && !pointerLocked) canvas.requestPointerLock?.();
+});
+document.addEventListener('pointerlockchange', () => {
+  pointerLocked = document.pointerLockElement === canvas;
+});
+
+/* Mouse look */
+document.addEventListener('mousemove', (e) => {
+  if (!pointerLocked) return;
+  yaw   -= e.movementX * 0.0022;
+  pitch -= e.movementY * 0.0022;
+  pitch = Math.max(-Math.PI / 2 + 0.1, Math.min(Math.PI / 2 - 0.1, pitch));
+});
+
+/* Left mouse button = walk forward */
+document.addEventListener('mousedown', (e) => {
+  if (e.button === 0 && startScreen.style.display === 'none') mouseWalking = true;
+});
+document.addEventListener('mouseup', (e) => {
+  if (e.button === 0) mouseWalking = false;
+});
+
+/* Keyboard */
+const keyMap = {
+  ArrowUp: 'forward', KeyW: 'forward',
+  ArrowDown: 'back',  KeyS: 'back',
+  ArrowLeft: 'left',  KeyA: 'left',
+  ArrowRight: 'right',KeyD: 'right'
+};
+document.addEventListener('keydown', (e) => {
+  if (keyMap[e.code]) { move[keyMap[e.code]] = true; e.preventDefault(); }
+});
+document.addEventListener('keyup', (e) => {
+  if (keyMap[e.code]) { move[keyMap[e.code]] = false; e.preventDefault(); }
+});
+
+/* On-screen arrow buttons (mouse + touch) */
+document.querySelectorAll('.arrow-btn').forEach(btn => {
+  const dir = btn.dataset.dir;
+  const on  = (e) => { e.preventDefault(); move[dir] = true; btn.classList.add('active'); };
+  const off = (e) => { e.preventDefault(); move[dir] = false; btn.classList.remove('active'); };
+  btn.addEventListener('mousedown', on);
+  btn.addEventListener('mouseup', off);
+  btn.addEventListener('mouseleave', off);
+  btn.addEventListener('touchstart', on, { passive: false });
+  btn.addEventListener('touchend', off, { passive: false });
+});
+
+/* ---------- Collision ---------- */
+function collides(x, z) {
+  for (const c of colliders) {
+    if (x > c.minX - PLAYER_RADIUS && x < c.maxX + PLAYER_RADIUS &&
+        z > c.minZ - PLAYER_RADIUS && z < c.maxZ + PLAYER_RADIUS) return true;
+  }
+  return false;
+}
+
+function updateRegion() {
+  let current = 'Main Lobby';
+  for (const r of REGIONS) {
+    if (Math.abs(camera.position.x - r.cx) < r.r && Math.abs(camera.position.z - r.cz) < r.r) {
+      current = r.name;
+    }
+  }
+  if (roomNameEl.textContent !== current) roomNameEl.textContent = current;
+}
+
+/* ---------- Render loop ---------- */
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+
+  // apply look rotation
+  camera.rotation.order = 'YXZ';
+  camera.rotation.y = yaw;
+  camera.rotation.x = pitch;
+
+  // movement direction (relative to yaw only, keep on ground)
+  let fx = 0, fz = 0;
+  const forwardActive = move.forward || mouseWalking;
+  if (forwardActive) { fx += Math.sin(yaw); fz += Math.cos(yaw); fz *= -1; }
+  if (move.back)     { fx -= Math.sin(yaw); fz += Math.cos(yaw); }
+  if (move.left)     { fx -= Math.cos(yaw); fz -= Math.sin(yaw); fz *= 1; }
+  if (move.right)    { fx += Math.cos(yaw); fz += Math.sin(yaw); }
+
+  // normalize
+  const len = Math.hypot(fx, fz);
+  if (len > 0) {
+    fx /= len; fz /= len;
+    const nx = camera.position.x + fx * SPEED * dt;
+    const nz = camera.position.z + fz * SPEED * dt;
+    // slide along walls: test axes separately
+    if (!collides(nx, camera.position.z)) camera.position.x = nx;
+    if (!collides(camera.position.x, nz)) camera.position.z = nz;
+  }
+
+  camera.position.y = EYE_HEIGHT;
+  updateRegion();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ---------- Resize ---------- */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
